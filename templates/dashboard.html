@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PIXEL ON WIRES // FPV DASHBOARD</title>
+    <style>
+        :root {
+            /* Removed the incorrect "var()" wrapping */
+            --accent: #ffb86c; 
+            --bg: #0b0b0d;
+            --panel: #141419;
+            --text-muted: #6272a4;
+        }
+        body { 
+            background: var(--bg); 
+            color: #f8f8f2; 
+            font-family: "Courier New", Courier, monospace; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            margin: 0; 
+            padding: 40px 20px; 
+        }
+
+        h2 {
+            letter-spacing: 4px;
+            color: #50fa7b;
+            font-size: 1.2rem;
+            margin-bottom: 30px;
+            text-shadow: 0 0 10px rgba(80, 250, 123, 0.3);
+        }
+
+        .dashboard { 
+            background: var(--panel); 
+            border: 1px solid #282a36; 
+            border-radius: 6px; 
+            padding: 24px; 
+            box-shadow: 0 15px 35px rgba(0,0,0,0.9);
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .video-wrapper {
+            width: 800px;
+            height: 450px; 
+            background: #000;
+            border-radius: 4px;
+            border: 1px solid #444;
+            overflow: hidden; 
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #pov { 
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: rotate(90deg) scale(1.8); 
+        }
+
+        .hud-overlay {
+            position: absolute;
+            top: 15px;
+            left: 20px;
+            color: #ffb86c;
+            font-size: 12px;
+            pointer-events: none;
+            text-shadow: 1px 1px 0px #000;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .controls-panel {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-top: 1px dashed #333;
+            padding-top: 20px;
+            font-size: 0.9rem;
+        }
+
+        .status-box {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            color: var(--text-muted);
+        }
+
+        #cmd-log { 
+            color: #ffb86c; 
+            font-weight: bold; 
+            letter-spacing: 1px;
+        }
+        
+        #pad-status { font-weight: bold; transition: color 0.3s ease; }
+
+        input { 
+            background: #000; 
+            color: #50fa7b; 
+            border: 1px solid #444; 
+            padding: 8px 12px; 
+            font-family: inherit;
+            border-radius: 4px;
+            outline: none;
+            width: 140px;
+            text-align: center;
+        }
+        
+        input:focus { border-color: #ffb86c; }
+    </style>
+</head>
+<body>
+
+    <h2>[ PIXEL ON WIRES // FPV FEED ]</h2>
+    
+    <div class="dashboard">
+        <div class="video-wrapper">
+            <div class="hud-overlay">
+                <span>REC ●</span>
+                <span id="pad-status">PAD // OFFLINE</span>
+                <span>PWR // <span id="hud-speed">200</span></span>
+            </div>
+            <img id="pov" src="" alt="AWAITING STREAM DATA...">
+        </div>
+        
+        <div class="controls-panel">
+            <div class="status-box">
+                <span>TARGET IP: <input type="text" id="esp_ip" value="10.218.186.69" readonly style="cursor: not-allowed; color: #6272a4; border-color: #333;"></span>
+            </div>
+            <div class="status-box" style="text-align: right;">
+                <span>INPUT // ACTIVE</span>
+                <span id="cmd-log">SYS.IDLE</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const povImage = document.getElementById('pov');
+        const ws = new WebSocket(`ws://${window.location.host}/dash-ws`);
+        ws.onmessage = (event) => { povImage.src = event.data; };
+
+        // --- Core State Variables ---
+        let keyCmd = "STOP";
+        let padCmd = "STOP";
+        let lastSentCmd = "STOP";
+        
+        let currentSpeed = 200;   // Default starting speed
+        let lastSentSpeed = 200; 
+        
+        let gamepadIndex = null;
+        
+        const cmdLog = document.getElementById('cmd-log');
+        const padStatus = document.getElementById('pad-status');
+        const hudSpeed = document.getElementById('hud-speed');
+
+        function evaluateDriveState() {
+            let targetCmd = (padCmd !== "STOP") ? padCmd : keyCmd;
+
+            // Failsafe: if speed is 0, the bot cannot move
+            if (currentSpeed === 0) targetCmd = "STOP";
+
+            // Only ping the server if the direction changes, OR if speed shifts significantly (by 10 units)
+            if (targetCmd !== lastSentCmd || Math.abs(currentSpeed - lastSentSpeed) >= 10 || currentSpeed === 0) {
+                lastSentCmd = targetCmd;
+                lastSentSpeed = currentSpeed;
+                
+                cmdLog.innerText = `CMD // ${targetCmd} [SPD: ${Math.round(currentSpeed)}]`;
+                
+                const espIp = document.getElementById('esp_ip').value;
+                // We now attach both the command AND the speed to the background request
+                fetch(`/drive?cmd=${targetCmd}&speed=${Math.round(currentSpeed)}&esp_ip=${espIp}`);
+            }
+        }
+
+        // --- Keyboard Controls ---
+        let activeKey = null;
+        document.addEventListener('keydown', (e) => {
+            let key = e.key.toLowerCase();
+            if (['w', 'a', 's', 'd'].includes(key) && activeKey !== key) {
+                activeKey = key;
+                keyCmd = key === 'w' ? 'FORWARD' : key === 's' ? 'BACKWARD' : key === 'a' ? 'LEFT' : 'RIGHT';
+                evaluateDriveState();
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            let key = e.key.toLowerCase();
+            if (['w', 'a', 's', 'd'].includes(key) && activeKey === key) {
+                activeKey = null;
+                keyCmd = 'STOP';
+                evaluateDriveState();
+            }
+        });
+
+        // --- Gamepad Controls ---
+        window.addEventListener("gamepadconnected", (e) => {
+            gamepadIndex = e.gamepad.index;
+            padStatus.innerText = "PAD // LINKED";
+            padStatus.style.color = "#50fa7b"; 
+            requestAnimationFrame(pollGamepad);
+        });
+
+        window.addEventListener("gamepaddisconnected", (e) => {
+            if (e.gamepad.index === gamepadIndex) {
+                gamepadIndex = null;
+                padStatus.innerText = "PAD // OFFLINE";
+                padStatus.style.color = "#ffb86c";
+                padCmd = "STOP";
+                evaluateDriveState();
+            }
+        });
+
+        function pollGamepad() {
+            if (gamepadIndex !== null) {
+                const pad = navigator.getGamepads()[gamepadIndex];
+                if (pad) {
+                    let currentPadCmd = "STOP";
+                    const deadzone = 0.5; 
+
+                    // 1. Throttle / Brake Logic (Buttons 7 = RT, 6 = LT)
+                    // Ramp up/down by 2 units per frame (~120 units per second)
+                    if (pad.buttons[7].pressed && currentSpeed < 255) {
+                        currentSpeed += 2; 
+                        if (currentSpeed > 255) currentSpeed = 255;
+                    }
+                    if (pad.buttons[6].pressed && currentSpeed > 0) {
+                        currentSpeed -= 2;
+                        if (currentSpeed < 0) currentSpeed = 0;
+                    }
+
+                    // 2. Immediate Kill-Switch (Button 11 = Right Stick Press)
+                    if (pad.buttons[11].pressed) {
+                        currentSpeed = 0;
+                        currentPadCmd = "STOP";
+                    } 
+                    // 3. Directional Movement (Left Stick or D-Pad)
+                    else {
+                        if (pad.buttons[12]?.pressed || pad.axes[1] < -deadzone) currentPadCmd = "FORWARD";
+                        else if (pad.buttons[13]?.pressed || pad.axes[1] > deadzone) currentPadCmd = "BACKWARD";
+                        else if (pad.buttons[14]?.pressed || pad.axes[0] < -deadzone) currentPadCmd = "LEFT";
+                        else if (pad.buttons[15]?.pressed || pad.axes[0] > deadzone) currentPadCmd = "RIGHT";
+                    }
+
+                    // Update HUD overlay text instantly
+                    hudSpeed.innerText = Math.round(currentSpeed);
+
+                    // Check if state machine needs to fire an update
+                    if (currentPadCmd !== padCmd || Math.abs(currentSpeed - lastSentSpeed) >= 10) {
+                        padCmd = currentPadCmd;
+                        evaluateDriveState();
+                    }
+                }
+                requestAnimationFrame(pollGamepad);
+            }
+        }
+    </script>
+</body>
+</html>

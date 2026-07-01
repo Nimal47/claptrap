@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phone Camera Node</title>
+    <style>
+        body { background: #0f0f11; color: #a0a0a5; font-family: monospace; text-align: center; margin-top: 50px; }
+        #status { color: #00ff66; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h2>[ PIXEL ON WIRES // CAMERA NODE ]</h2>
+    <p>Status: <span id="status">Connecting...</span></p>
+    
+    <video id="video" autoplay playsinline style="display:none;"></video>
+    <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('status');
+
+        // Automatically connect to the laptop backend websocket
+        const ws = new WebSocket(`ws://${window.location.host}/stream`);
+
+        ws.onopen = () => {
+            statusText.innerText = "STREAMING ACTIVE";
+            startCamera();
+        };
+
+        function startCamera() {
+            navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: "environment", width: 640, height: 480 }, 
+                audio: false 
+            }).then(stream => {
+                video.srcObject = stream;
+                // Capture and send a frame every 40ms (~25 FPS)
+                setInterval(sendFrame, 40);
+            }).catch(err => {
+                statusText.innerText = "CAMERA ERROR: " + err;
+                statusText.style.color = "#ff3333";
+            });
+        }
+
+        function sendFrame() {
+            if (ws.readyState === WebSocket.OPEN) {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                // 0.4 sets the JPEG compression quality (low file size = zero lag)
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.4); 
+                ws.send(dataUrl);
+            }
+        }
+    </script>
+</body>
+</html>
