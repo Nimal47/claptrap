@@ -20,6 +20,9 @@ const int BIN2 = 13;
 // --- Standby Pin ---
 const int STBY = 33;
 
+// Motors can't usefully exceed this PWM under load, so it's the hard cap.
+const int MAX_SPEED = 160;
+
 void setup() {
   Serial.begin(115200);
 
@@ -62,82 +65,41 @@ void setup() {
   server.begin();
 }
 
+// Drives one motor at a signed speed: positive = forward, negative = reverse, 0 = stop.
+void driveMotor(int pwmPin, int in1, int in2, int value) {
+  if (value > 0) {
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+  } else if (value < 0) {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, HIGH);
+  } else {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
+  }
+  analogWrite(pwmPin, abs(value));
+}
+
 void handleDrive() {
-  if (server.hasArg("cmd")) {
-    String command = server.arg("cmd");
-    
-    // Default speed is 0 if not provided by the dashboard
-    int currentSpeed = 0; 
-    
-    // Capture the live speed from the EvoFox trigger data
-    if (server.hasArg("speed")) {
-      currentSpeed = server.arg("speed").toInt();
-    }
-    
-    // Safety check: Ensure speed is within valid 8-bit PWM bounds (0-255)
-    if (currentSpeed > 255) currentSpeed = 255;
-    if (currentSpeed < 0) currentSpeed = 0;
+  if (server.hasArg("left") && server.hasArg("right")) {
+    int leftVal = server.arg("left").toInt();
+    int rightVal = server.arg("right").toInt();
 
-    // --- DEBUGGING PRINT STATEMENTS ---
-    Serial.print("Ping Received -> CMD: [");
-    Serial.print(command);
-    Serial.print("] | SPEED: [");
-    Serial.print(currentSpeed);
-    Serial.println("]");
-    // ----------------------------------
+    leftVal = constrain(leftVal, -MAX_SPEED, MAX_SPEED);
+    rightVal = constrain(rightVal, -MAX_SPEED, MAX_SPEED);
 
-    // --- MOVEMENT LOGIC ---
-    if (command == "STOP") {
-      analogWrite(PWMA, 0);
-      analogWrite(PWMB, 0);
-    }
-    
-    else if (command == "FORWARD") {
-      // Changed to HIGH/LOW to match physical forward movement
-      digitalWrite(AIN1, HIGH);
-      digitalWrite(AIN2, LOW);
-      digitalWrite(BIN1, HIGH);
-      digitalWrite(BIN2, LOW);
-      
-      analogWrite(PWMA, currentSpeed);
-      analogWrite(PWMB, currentSpeed);
-    } 
-    else if (command == "BACKWARD") {
-      // Changed to LOW/HIGH to match physical backward movement
-      digitalWrite(AIN1, LOW);
-      digitalWrite(AIN2, HIGH);
-      digitalWrite(BIN1, LOW);
-      digitalWrite(BIN2, HIGH);
-      
-      analogWrite(PWMA, currentSpeed);
-      analogWrite(PWMB, currentSpeed);
-    }
-    else if (command == "LEFT") {
-      digitalWrite(AIN1, LOW);
-      digitalWrite(AIN2, HIGH);
-      digitalWrite(BIN1, HIGH);
-      digitalWrite(BIN2, LOW);
-      
-      analogWrite(PWMA, currentSpeed);
-      analogWrite(PWMB, currentSpeed);
-    } 
-    else if (command == "RIGHT") {
-      digitalWrite(AIN1, HIGH);
-      digitalWrite(AIN2, LOW);
-      digitalWrite(BIN1, LOW);
-      digitalWrite(BIN2, HIGH);
-      
-      analogWrite(PWMA, currentSpeed);
-      analogWrite(PWMB, currentSpeed);
-    } 
-    
+    driveMotor(PWMA, AIN1, AIN2, leftVal);
+    driveMotor(PWMB, BIN1, BIN2, rightVal);
+
+    Serial.printf("Drive -> L: %d | R: %d\n", leftVal, rightVal);
+
     // Acknowledge the command so the laptop dashboard fetch() completes
     server.send(200, "text/plain", "OK");
-  } 
+  }
   else {
-    // Failsafe if the endpoint is hit without a command
-    Serial.println("WARNING: Ping received, but 'cmd' was missing!");
-    server.send(400, "text/plain", "ERR: Missing CMD");
+    // Failsafe if the endpoint is hit without both motor speeds
+    Serial.println("WARNING: Ping received, but 'left'/'right' was missing!");
+    server.send(400, "text/plain", "ERR: Missing left/right");
   }
 }
 

@@ -48,17 +48,16 @@ async def websocket_dashboard(websocket: WebSocket):
     except WebSocketDisconnect:
         dashboards.remove(websocket)
 
-# 5. Relay Keyboard Driving Commands to the ESP32
+# 5. Relay Differential Drive Commands (per-motor signed speed) to the ESP32
 @app.get("/drive")
-async def drive(cmd: str, esp_ip: str, speed: int = 0): # <-- Added speed here
+async def drive(left: int, right: int, esp_ip: str):
     try:
-        # We now attach BOTH the cmd and the speed to the outgoing request!
-        target_url = f"http://{esp_ip}/drive?cmd={cmd}&speed={speed}" 
-        
+        target_url = f"http://{esp_ip}/drive?left={left}&right={right}"
+
         async with httpx.AsyncClient() as client:
             await client.get(target_url, timeout=2.0)
-            
-        return {"status": "success", "cmd": cmd, "speed": speed}
+
+        return {"status": "success", "left": left, "right": right}
     except Exception as e:
         return {"status": "error", "details": str(e)}
 

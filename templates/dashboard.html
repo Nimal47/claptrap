@@ -122,7 +122,7 @@
             <div class="hud-overlay">
                 <span>REC ●</span>
                 <span id="pad-status">PAD // OFFLINE</span>
-                <span>PWR // <span id="hud-speed">200</span></span>
+                <span>PWR // <span id="hud-speed">0</span></span>
             </div>
             <img id="pov" src="" alt="AWAITING STREAM DATA...">
         </div>
@@ -144,62 +144,36 @@
         ws.onmessage = (event) => { povImage.src = event.data; };
 
         // --- Core State Variables ---
-        let keyCmd = "STOP";
-        let padCmd = "STOP";
-        let lastSentCmd = "STOP";
-        
-        let currentSpeed = 200;   // Default starting speed
-        let lastSentSpeed = 200; 
-        
+        const MAX_SPEED = 160;   // Hard cap - motors can't usefully exceed this under load
+        const RAMP_RATE = 2;     // Throttle change per frame (~120 units/sec at 60fps)
+        const DEADZONE = 0.15;
+
+        let throttle = 0;        // Signed target speed: + forward, - reverse
+        let lastSentLeft = null;
+        let lastSentRight = null;
+
         let gamepadIndex = null;
-        
+
         const cmdLog = document.getElementById('cmd-log');
         const padStatus = document.getElementById('pad-status');
         const hudSpeed = document.getElementById('hud-speed');
 
-        function evaluateDriveState() {
-            let targetCmd = (padCmd !== "STOP") ? padCmd : keyCmd;
+        function sendMotors(leftMotor, rightMotor) {
+            if (leftMotor === lastSentLeft && rightMotor === lastSentRight) return;
+            lastSentLeft = leftMotor;
+            lastSentRight = rightMotor;
 
-            // Failsafe: if speed is 0, the bot cannot move
-            if (currentSpeed === 0) targetCmd = "STOP";
+            cmdLog.innerText = `L: ${leftMotor} | R: ${rightMotor}`;
 
-            // Only ping the server if the direction changes, OR if speed shifts significantly (by 10 units)
-            if (targetCmd !== lastSentCmd || Math.abs(currentSpeed - lastSentSpeed) >= 10 || currentSpeed === 0) {
-                lastSentCmd = targetCmd;
-                lastSentSpeed = currentSpeed;
-                
-                cmdLog.innerText = `CMD // ${targetCmd} [SPD: ${Math.round(currentSpeed)}]`;
-                
-                const espIp = document.getElementById('esp_ip').value;
-                // We now attach both the command AND the speed to the background request
-                fetch(`/drive?cmd=${targetCmd}&speed=${Math.round(currentSpeed)}&esp_ip=${espIp}`);
-            }
+            const espIp = document.getElementById('esp_ip').value;
+            fetch(`/drive?left=${leftMotor}&right=${rightMotor}&esp_ip=${espIp}`);
         }
-
-        // --- Keyboard Controls ---
-        let activeKey = null;
-        document.addEventListener('keydown', (e) => {
-            let key = e.key.toLowerCase();
-            if (['w', 'a', 's', 'd'].includes(key) && activeKey !== key) {
-                activeKey = key;
-                keyCmd = key === 'w' ? 'FORWARD' : key === 's' ? 'BACKWARD' : key === 'a' ? 'LEFT' : 'RIGHT';
-                evaluateDriveState();
-            }
-        });
-        document.addEventListener('keyup', (e) => {
-            let key = e.key.toLowerCase();
-            if (['w', 'a', 's', 'd'].includes(key) && activeKey === key) {
-                activeKey = null;
-                keyCmd = 'STOP';
-                evaluateDriveState();
-            }
-        });
 
         // --- Gamepad Controls ---
         window.addEventListener("gamepadconnected", (e) => {
             gamepadIndex = e.gamepad.index;
             padStatus.innerText = "PAD // LINKED";
-            padStatus.style.color = "#50fa7b"; 
+            padStatus.style.color = "#50fa7b";
             requestAnimationFrame(pollGamepad);
         });
 
@@ -208,8 +182,8 @@
                 gamepadIndex = null;
                 padStatus.innerText = "PAD // OFFLINE";
                 padStatus.style.color = "#ffb86c";
-                padCmd = "STOP";
-                evaluateDriveState();
+                throttle = 0;
+                sendMotors(0, 0);
             }
         });
 
@@ -217,41 +191,42 @@
             if (gamepadIndex !== null) {
                 const pad = navigator.getGamepads()[gamepadIndex];
                 if (pad) {
-                    let currentPadCmd = "STOP";
-                    const deadzone = 0.5; 
-
-                    // 1. Throttle / Brake Logic (Buttons 7 = RT, 6 = LT)
-                    // Ramp up/down by 2 units per frame (~120 units per second)
-                    if (pad.buttons[7].pressed && currentSpeed < 255) {
-                        currentSpeed += 2; 
-                        if (currentSpeed > 255) currentSpeed = 255;
-                    }
-                    if (pad.buttons[6].pressed && currentSpeed > 0) {
-                        currentSpeed -= 2;
-                        if (currentSpeed < 0) currentSpeed = 0;
-                    }
-
-                    // 2. Immediate Kill-Switch (Button 11 = Right Stick Press)
-                    if (pad.buttons[11].pressed) {
-                        currentSpeed = 0;
-                        currentPadCmd = "STOP";
-                    } 
-                    // 3. Directional Movement (Left Stick or D-Pad)
-                    else {
-                        if (pad.buttons[12]?.pressed || pad.axes[1] < -deadzone) currentPadCmd = "FORWARD";
-                        else if (pad.buttons[13]?.pressed || pad.axes[1] > deadzone) currentPadCmd = "BACKWARD";
-                        else if (pad.buttons[14]?.pressed || pad.axes[0] < -deadzone) currentPadCmd = "LEFT";
-                        else if (pad.buttons[15]?.pressed || pad.axes[0] > deadzone) currentPadCmd = "RIGHT";
+                    // 1. RB = brake: stop immediately, overrides RT/LT this frame
+                    if (pad.buttons[5].pressed) {
+                        throttle = 0;
+                    } else {
+                        // RT ramps speed up (toward forward), LT ramps it down
+                        // and past 0 continues ramping into reverse.
+                        if (pad.buttons[7].pressed) {
+                            throttle = Math.min(MAX_SPEED, throttle + RAMP_RATE);
+                        }
+                        if (pad.buttons[6].pressed) {
+                            throttle = Math.max(-MAX_SPEED, throttle - RAMP_RATE);
+                        }
                     }
 
-                    // Update HUD overlay text instantly
-                    hudSpeed.innerText = Math.round(currentSpeed);
+                    let leftMotor = throttle;
+                    let rightMotor = throttle;
 
-                    // Check if state machine needs to fire an update
-                    if (currentPadCmd !== padCmd || Math.abs(currentSpeed - lastSentSpeed) >= 10) {
-                        padCmd = currentPadCmd;
-                        evaluateDriveState();
+                    const spin = Math.abs(pad.axes[2]) > DEADZONE ? pad.axes[2] : 0;
+
+                    if (spin !== 0 && throttle === 0) {
+                        // Right stick: spin on the spot (only while stopped)
+                        leftMotor = spin * MAX_SPEED;
+                        rightMotor = -spin * MAX_SPEED;
+                    } else {
+                        // Left stick: steer by easing the inner wheel toward 0,
+                        // never reversing it - full spin is the right stick's job.
+                        const steer = Math.abs(pad.axes[0]) > DEADZONE ? pad.axes[0] : 0;
+                        if (steer > 0) rightMotor = throttle * (1 - steer);
+                        else if (steer < 0) leftMotor = throttle * (1 + steer);
                     }
+
+                    leftMotor = Math.round(leftMotor);
+                    rightMotor = Math.round(rightMotor);
+
+                    hudSpeed.innerText = Math.round(throttle);
+                    sendMotors(leftMotor, rightMotor);
                 }
                 requestAnimationFrame(pollGamepad);
             }
